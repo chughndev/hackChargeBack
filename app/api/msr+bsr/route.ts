@@ -1,17 +1,16 @@
 import { NextResponse } from "next/server";
-import { db } from "@app/lib/ds";
+import { db } from "@/app/lib/db";
+import { SUCCESS_CODES } from "@/app/lib/chargeback";
 
 export async function GET() {
   try {
-    const threshold = 5; // you can tune this
-
     const [rows] = await db.query(
         `WITH txn_summary AS (
         SELECT 
             transaction_id,
 
             MAX(CASE 
-                WHEN reason_code IN ('A','FCA','WA','AP','FA','C','REF','RET') 
+                WHEN reason_code IN (${SUCCESS_CODES.map(() => "?").join(", ")}) 
                 THEN 1 ELSE 0 
             END) AS is_success,
 
@@ -53,6 +52,8 @@ export async function GET() {
 
         FROM txn_summary
         GROUP BY beneficiary_bank;`
+        ,
+        [...SUCCESS_CODES]
     );
 
     return NextResponse.json({

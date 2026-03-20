@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { db } from "@app/lib/ds";
+import { db } from "@/app/lib/db";
+import { RAISE_CODES, SUCCESS_CODES } from "@/app/lib/chargeback";
 
 export async function GET() {
   try {
@@ -9,12 +10,12 @@ export async function GET() {
           transaction_id,
 
           MAX(CASE 
-              WHEN reason_code IN ('B','WC','FC','FB') 
+              WHEN reason_code IN (${RAISE_CODES.map(() => "?").join(", ")}) 
               THEN reason_code 
           END) AS raise_reason,
 
           MAX(CASE 
-              WHEN reason_code IN ('A','FCA','WA','AP','FA','C','REF','RET') 
+              WHEN reason_code IN (${SUCCESS_CODES.map(() => "?").join(", ")}) 
               THEN 1 ELSE 0 
           END) AS is_success,
 
@@ -37,7 +38,7 @@ export async function GET() {
       FROM txn_summary
       WHERE raise_reason IS NOT NULL
       GROUP BY raise_reason
-    `);
+    `, [...RAISE_CODES, ...SUCCESS_CODES]);
 
     return NextResponse.json({
       success: true,
@@ -49,6 +50,6 @@ export async function GET() {
     return NextResponse.json({
       success: false,
       error: "Failed to fetch RSR",
-    });
+    }, { status: 500 });
   }
 }
