@@ -1,13 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { RowDataPacket } from "mysql2";
 import { db } from "@/app/lib/db";
-import {
-  RAISE_CODES,
-  REFUND_CODES,
-  RETURN_PROBABILITY_THRESHOLD,
-} from "@/app/lib/chargeback";
+import { RETURN_PROBABILITY_THRESHOLD } from "@/app/lib/chargeback";
 
-type ReturnProbabilityRow = RowDataPacket & {
+type ReturnProbabilityRow = {
   total_complaints: number | string | null;
   refund_processed_complaints: number | string | null;
 };
@@ -47,30 +42,16 @@ export async function GET(request: NextRequest) {
   try {
     const [rows] = await db.query<ReturnProbabilityRow[]>(
       `
-        WITH txn_summary AS (
-          SELECT
-            transaction_id,
-            MAX(CASE
-              WHEN reason_code IN (${RAISE_CODES.map(() => "?").join(", ")})
-              THEN 1 ELSE 0
-            END) AS has_complaint,
-            MAX(CASE
-              WHEN reason_code IN (${REFUND_CODES.map(() => "?").join(", ")})
-              THEN 1 ELSE 0
-            END) AS is_refund_processed
-          FROM adjustment_outward_history
-          WHERE beneficiary_account_number = ?
-          GROUP BY transaction_id
-        )
         SELECT
-          COALESCE(SUM(has_complaint), 0) AS total_complaints,
+          COUNT(*) AS total_complaints,
           COALESCE(SUM(CASE
-            WHEN has_complaint = 1 AND is_refund_processed = 1 THEN 1
+            WHEN UPPER(COALESCE(closure_reason, '')) = 'REFUND_PROCESSED' THEN 1
             ELSE 0
           END), 0) AS refund_processed_complaints
-        FROM txn_summary
+        FROM complaint
+        WHERE beneficiary_account_number = ?
       `,
-      [...RAISE_CODES, ...REFUND_CODES, beneficiaryAccountNumber]
+      [beneficiaryAccountNumber]
     );
 
     const row = rows[0];

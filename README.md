@@ -1,306 +1,366 @@
-# 📊 Chargeback Analytics – Database README
+# Chargeback Analytics
 
-This document explains the structure, purpose, and relationships of all tables used in the chargeback analytics system. It is designed to help developers, analysts, and backend engineers understand how data flows and how metrics like **RSR, MSR, BSR, CCS** are derived.
+This project is a Next.js app that:
 
----
+- stores source data in SQLite
+- accepts an `input_staging` upload from the frontend
+- calculates chargeback-related scores
+- returns a scored result file for download
 
-# 🧠 System Overview
+The main user flow is:
 
-The system processes dispute/chargeback data and computes:
+1. load source CSVs into SQLite
+2. upload an `input_staging` file from the UI
+3. preview the scored rows
+4. download the final scored file
 
-* **RSR** → Reason Success Rate
-* **MSR** → Merchant Success Rate
-* **BSR** → Bank Success Rate
-* **CCS** → Customer Credibility Score
+## Stack
 
----
+- Next.js app router
+- SQLite
+- `database.db` as the local database file
 
-# 🗄️ Tables Overview
+Database path is configured in [app/lib/db.ts](/Users/user/Desktop/Project/hack_chargeback/app/lib/db.ts).
+
+By default the app uses:
 
 ```text
-input_staging → raw uploaded data (Excel)
-transaction_table → transaction master data
-complaint → complaint/CRM data
-adjustment_outward_history → dispute lifecycle (core table)
+database.db
 ```
 
----
+You can override it with:
 
-# 📂 1. `input_staging` (Raw Upload Table)
+```bash
+SQLITE_DB_FILE=your_file.db
+```
 
-## 📌 Purpose
+## Required Tables
 
-Stores raw data uploaded from Excel before processing.
+Create these four base tables in SQLite.
 
-## 🧾 Columns
+```sql
+CREATE TABLE transaction_table (
+    transaction_id TEXT PRIMARY KEY,
+    amount REAL,
+    beneficiary_account_number TEXT,
+    remitter_account_number TEXT,
+    transaction_date TEXT,
+    transaction_type TEXT
+);
 
-| Column                  | Type     | Description                   |
-| ----------------------- | -------- | ----------------------------- |
-| crm_id                  | VARCHAR  | Complaint reference ID        |
-| transaction_id          | VARCHAR  | Unique transaction identifier |
-| complaint_amount        | DECIMAL  | Amount disputed               |
-| complaint_reason        | VARCHAR  | Reason for complaint          |
-| remitter_account_number | VARCHAR  | Sender account                |
-| transaction_date        | DATETIME | Transaction timestamp         |
+CREATE TABLE complaint (
+    crm_id TEXT PRIMARY KEY,
+    status TEXT,
+    closure_reason TEXT,
+    remitter_account_number TEXT,
+    beneficiary_account_number TEXT,
+    transaction_id TEXT,
+    amount REAL,
+    transaction_date TEXT,
+    FOREIGN KEY (transaction_id)
+        REFERENCES transaction_table(transaction_id)
+);
 
-## 🧠 Notes
+CREATE TABLE adjustment_outward_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    transaction_id TEXT,
+    amount REAL,
+    beneficiary_account_number TEXT,
+    remitter_account_number TEXT,
+    branch_code TEXT,
+    adjustment_flag TEXT,
+    transaction_date TEXT,
+    adjustment_date TEXT,
+    remitter_bank_code TEXT,
+    beneficiary_bank_code TEXT,
+    reason_code TEXT,
+    penalty_amount REAL,
+    transaction_type TEXT,
+    FOREIGN KEY (transaction_id)
+        REFERENCES transaction_table(transaction_id)
+);
 
-* Used as **temporary staging layer**
-* Data is later moved to structured tables
+CREATE TABLE input_staging (
+    crm_id TEXT,
+    transaction_id TEXT,
+    complaint_amount REAL,
+    complaint_reason TEXT,
+    remitter_account_number TEXT,
+    transaction_date TEXT
+);
+```
 
----
+The upload API creates this table automatically when needed:
 
-# 📂 2. `transaction_table` (Transaction Master)
+```sql
+CREATE TABLE IF NOT EXISTS input_staging_scored (
+    crm_id TEXT,
+    transaction_id TEXT,
+    complaint_amount REAL,
+    complaint_reason TEXT,
+    remitter_account_number TEXT,
+    transaction_date TEXT,
+    success_probability REAL,
+    return_probability REAL,
+    action_to_be_taken TEXT,
+    fraud_detection REAL
+);
+```
 
-## 📌 Purpose
+## Create The Database
 
-Stores all financial transactions.
+From the project root:
 
-## 🧾 Columns
+```bash
+cd /Users/user/Desktop/Project/hack_chargeback
+sqlite3 database.db
+```
 
-| Column                     | Type         | Description           |
-| -------------------------- | ------------ | --------------------- |
-| transaction_id             | VARCHAR (PK) | Unique transaction ID |
-| amount                     | DECIMAL      | Transaction amount    |
-| beneficiary_account_number | VARCHAR      | Merchant account      |
-| remitter_account_number    | VARCHAR      | Customer account      |
-| transaction_date           | DATETIME     | Transaction timestamp |
-| transaction_type           | VARCHAR      | Type (e.g., P2M, P2P) |
+Then paste the table schema above into the SQLite shell.
 
-## 🧠 Notes
+## Source CSV Mapping
 
-* Acts as **base reference table**
-* Used in joins with complaints and disputes
+Your three source CSVs should be loaded into these tables:
 
----
+- `transactions_v2.csv` -> `transaction_table`
+- `complaints_v2.csv` -> `complaint`
+- `adjustments_v2.csv` -> `adjustment_outward_history`
 
-# 📂 3. `complaint` (CRM Data)
+Important mapping for `adjustments_v2.csv`:
 
-## 📌 Purpose
+- `ADJ_FLAG` must go into `adjustment_flag`
+- `REASON_CODE` must go into `reason_code`
 
-Stores customer complaints raised against transactions.
+The analytics read dispute lifecycle codes like `B`, `WC`, `FA`, `WR`, `PR` from `adjustment_flag`.
 
-## 🧾 Columns
+## Recommended Indexes
 
-| Column                     | Type         | Description                           |
-| -------------------------- | ------------ | ------------------------------------- |
-| crm_id                     | VARCHAR (PK) | Complaint ID                          |
-| status                     | VARCHAR      | Complaint status (SUCCESS / REJECTED) |
-| closure_reason             | VARCHAR      | Final resolution reason               |
-| remitter_account_number    | VARCHAR      | Customer account                      |
-| beneficiary_account_number | VARCHAR      | Merchant account                      |
-| transaction_id             | VARCHAR (FK) | Linked transaction                    |
-| amount                     | DECIMAL      | Complaint amount                      |
-| transaction_date           | DATETIME     | Transaction timestamp                 |
+These are not required, but they help query performance.
 
-## 🔗 Relationships
+```sql
+CREATE INDEX idx_adjustment_txn_id ON adjustment_outward_history(transaction_id);
+CREATE INDEX idx_adjustment_beneficiary ON adjustment_outward_history(beneficiary_account_number);
+CREATE INDEX idx_adjustment_remitter ON adjustment_outward_history(remitter_account_number);
+CREATE INDEX idx_adjustment_bank ON adjustment_outward_history(beneficiary_bank_code);
+CREATE INDEX idx_adjustment_flag ON adjustment_outward_history(adjustment_flag);
 
-* FK → `transaction_table.transaction_id`
+CREATE INDEX idx_complaint_remitter ON complaint(remitter_account_number);
+CREATE INDEX idx_complaint_beneficiary ON complaint(beneficiary_account_number);
+CREATE INDEX idx_complaint_txn_date ON complaint(transaction_date);
 
----
+CREATE INDEX idx_transaction_remitter ON transaction_table(remitter_account_number);
+```
 
-# 📂 4. `adjustment_outward_history` (Core Dispute Table)
+## Upload File Format
 
-## 📌 Purpose
+The frontend upload is for `input_staging`, not for the three source tables.
 
-Tracks the **full lifecycle of chargebacks/disputes**
+Expected columns:
 
-👉 This is the **most important table**
+```csv
+crm_id,transaction_id,complaint_amount,complaint_reason,remitter_account_number,transaction_date
+```
 
----
+Example:
 
-## 🧾 Columns
+```csv
+crm_id,transaction_id,complaint_amount,complaint_reason,remitter_account_number,transaction_date
+71ff282a-1,d97c4c78-bb6,38064,WC,REM977175,2025-07-07 00:00:00
+38401322-f,b99acb4e-9de,24880,B,REM850135,2025-11-24 00:00:00
+77e259d0-c,973c05b8-775,45690,FC,REM279705,2025-08-15 00:00:00
+```
 
-| Column                     | Type     | Description                |
-| -------------------------- | -------- | -------------------------- |
-| id                         | INT (PK) | Auto ID                    |
-| transaction_id             | VARCHAR  | Transaction reference      |
-| amount                     | DECIMAL  | Transaction amount         |
-| beneficiary_account_number | VARCHAR  | Merchant account           |
-| remitter_account_number    | VARCHAR  | Customer account           |
-| branch_code                | VARCHAR  | Bank branch                |
-| adjustment_flag            | VARCHAR  | Adjustment indicator       |
-| transaction_date           | DATETIME | Original transaction date  |
-| adjustment_date            | DATETIME | Adjustment/chargeback date |
-| remitter_bank_code         | VARCHAR  | Customer bank              |
-| beneficiary_bank_code      | VARCHAR  | Merchant bank              |
-| reason_code                | VARCHAR  | Dispute reason / status    |
-| penalty_amount             | DECIMAL  | Penalty if applicable      |
-| transaction_type           | VARCHAR  | P2M / P2P                  |
+Notes:
 
----
+- `transaction_id` must exist in `transaction_table`
+- `remitter_account_number` is treated as the customer account
+- `complaint_reason` should ideally be one of the raise codes: `B`, `WC`, `FC`, `FB`
 
-# 🔁 Data Behavior (VERY IMPORTANT)
+## Frontend Upload Flow
 
-Each **transaction_id can have multiple rows**:
+Open the app and upload the `input_staging` file from the home page.
 
-### Example:
+The upload endpoint:
 
-| transaction_id | reason_code  |
-| -------------- | ------------ |
-| TXN1           | B (raise)    |
-| TXN1           | A (accepted) |
+```text
+POST /api/input-staging/upload
+```
 
----
+Supported file types:
 
-## 🧠 Interpretation
+- `.csv`
+- `.xls`
+- `.xlsx`
 
-* First row → **Dispute Raised**
-* Later row → **Final Outcome**
+The upload route:
 
----
+1. reads the file
+2. inserts raw rows into `input_staging`
+3. computes scores for each row
+4. inserts scored rows into `input_staging_scored`
+5. returns a downloadable scored file
 
-# 🧾 Reason Code Categories
+## Final Output Columns
 
-## 🔴 Raise Codes (Dispute Initiation)
+The generated file contains all uploaded columns plus these four columns:
+
+- `success_probability`
+- `return_probability`
+- `action_to_be_taken`
+- `fraud_detection`
+
+## What Each Score Means
+
+### `success_probability`
+
+Weighted combination of:
+
+- `RSR`
+- `MSR`
+- `CCS`
+- `BSR`
+- `ADS`
+
+Current weights are defined in [app/lib/chargeback.ts](/Users/user/Desktop/Project/hack_chargeback/app/lib/chargeback.ts):
+
+```text
+RSR = 0.20
+MSR = 0.25
+CCS = 0.30
+BSR = 0.10
+ADS = 0.15
+```
+
+Current action threshold:
+
+```text
+success_probability >= 0.34
+```
+
+### `return_probability`
+
+Measures how often complaints for the beneficiary end in refund processing.
+
+Current action threshold:
+
+```text
+return_probability >= 0.18
+```
+
+### `fraud_detection`
+
+Uses:
+
+- complaints in last 30 days
+- rejected complaint ratio
+- repeat disputes to the same beneficiary
+
+Current risk bands:
+
+```text
+LOW    < 0.14
+MEDIUM >= 0.14
+HIGH   >= 0.18
+```
+
+## Action Logic
+
+The current action logic is:
+
+1. if `return_probability >= 0.18` -> `merchant likely to refund`
+2. else if `fraud_detection >= 0.18` -> `do not raise`
+3. else if `success_probability >= 0.34` -> `raise chargeback`
+4. else -> `do not raise`
+
+## Dispute Code Buckets
+
+Defined in [app/lib/chargeback.ts](/Users/user/Desktop/Project/hack_chargeback/app/lib/chargeback.ts).
+
+Raise:
 
 ```text
 B, WC, FC, FB
 ```
 
-## 🟢 Success Codes (Accepted)
+Accept:
 
 ```text
-A, FCA, WA, AP, FA, C, REF, RET
+A, WA, FCA, FA
 ```
 
----
-
-# 📊 Derived Metrics
-
----
-
-# ✅ 1. RSR (Reason Success Rate)
-
-## 📌 Definition
+Reject:
 
 ```text
-RSR = successful disputes / total disputes (per reason)
+R, WR, FCR, FR
 ```
 
-## 🧠 Logic
-
-* Group by `transaction_id`
-* Extract:
-
-  * raise_reason
-  * success_flag
-
----
-
-# ✅ 2. MSR (Merchant Success Rate)
-
-## 📌 Definition
+Re-raise:
 
 ```text
-MSR = successful disputes for merchant / total disputes for merchant
+FP, P
 ```
 
-## ⚠️ Rule
+Re-raise accept:
 
 ```text
-if total_disputes <= threshold → MSR = 0.5
+AP, FAP
 ```
 
----
-
-# ✅ 3. BSR (Bank Success Rate)
-
-## 📌 Definition
+Re-raise reject:
 
 ```text
-BSR = successful disputes for bank / total disputes for bank
+PR, FPR
 ```
 
----
-
-# ✅ 4. CCS (Customer Credibility Score)
-
-## 📌 Definition
+Refund:
 
 ```text
-success_rate = (successful_disputes + 1) / (valid_disputes + 2)
-rejection_rate = (rejected_complaints + 1) / (total_complaints + 2)
-
-CCS = 50 + ((x * success_rate - (1-x) * rejection_rate) * 40)
+C, REF, RET
 ```
 
----
+## API Summary
 
-# 🔗 Relationships Summary
+Main APIs in this project:
+
+- `GET /api/ccs`
+- `GET /api/ads`
+- `GET /api/rsr`
+- `GET /api/msr+bsr`
+- `GET /api/success-probability`
+- `GET /api/return-probability`
+- `GET /api/fraud-detection`
+- `POST /api/input-staging/upload`
+
+## Assumptions Used By The Code
+
+- customer = `remitter_account_number`
+- beneficiary / merchant = `beneficiary_account_number`
+- bank = `beneficiary_bank_code`
+- complaint timestamp for fraud = `complaint.transaction_date`
+- ADS uses `transaction_table.amount`
+- dispute lifecycle codes are read from `adjustment_flag`
+
+If your CSV import puts lifecycle codes into the wrong column, score outputs will be wrong even if the app runs.
+
+## Run The App
+
+```bash
+npm install
+npm run dev
+```
+
+Then open:
 
 ```text
-transaction_table
-    ↑
-    │
-complaint
-    │
-    ↓
-adjustment_outward_history
+http://localhost:3000
 ```
 
----
+## Quick Checklist
 
-# ⚙️ Data Flow
+Before testing the upload UI, make sure:
 
-```text
-Excel Upload
-   ↓
-input_staging
-   ↓
-(transaction + complaint)
-   ↓
-adjustment_outward_history
-   ↓
-Analytics (RSR, MSR, BSR, CCS)
-```
-
----
-
-# 🚀 Key Design Principles
-
-* Normalize data across tables
-* Use `transaction_id` as primary join key
-* Aggregate at **transaction level (NOT row level)**
-* Handle multi-row lifecycle carefully
-
----
-
-# ⚠️ Common Pitfalls
-
-❌ Counting rows instead of transactions
-❌ Ignoring multiple lifecycle entries
-❌ Mixing raise and success codes
-❌ Not handling low sample size
-
----
-
-# 🔥 Suggested Indexes
-
-```sql
-CREATE INDEX idx_txn_id ON adjustment_outward_history(transaction_id);
-CREATE INDEX idx_reason ON adjustment_outward_history(reason_code);
-CREATE INDEX idx_beneficiary ON adjustment_outward_history(beneficiary_account_number);
-CREATE INDEX idx_bank ON adjustment_outward_history(beneficiary_bank_code);
-```
-
----
-
-# 🧠 Final Summary
-
-This system:
-
-* Tracks **end-to-end dispute lifecycle**
-* Derives **behavioral + institutional metrics**
-* Enables **risk scoring & prediction**
-
----
-
-# 💬 Future Enhancements
-
-* Add ML model for win prediction
-* Time-based trends (last 30 days)
-* Fraud detection signals
-* Real-time scoring APIs
-
----
+- `database.db` exists
+- all four base tables exist
+- source CSVs are loaded into `transaction_table`, `complaint`, and `adjustment_outward_history`
+- `adjustment_flag` contains values like `B`, `WC`, `FA`, `WR`, `PR`
+- your upload file matches the `input_staging` format

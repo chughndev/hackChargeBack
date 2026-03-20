@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { RowDataPacket } from "mysql2";
 import { db } from "@/app/lib/db";
 import {
   DISPUTE_ACCEPTANCE_CODES,
@@ -7,7 +6,7 @@ import {
   RAISE_CODES,
 } from "@/app/lib/chargeback";
 
-type CcsRow = RowDataPacket & {
+type CcsRow = {
   total_complaints: number | string | null;
   valid_disputes: number | string | null;
   successful_disputes: number | string | null;
@@ -61,19 +60,19 @@ export async function GET(request: NextRequest) {
         SELECT
           transaction_id,
           MAX(CASE
-            WHEN reason_code IN (${RAISE_CODES.map(() => "?").join(", ")})
+            WHEN adjustment_flag IN (${RAISE_CODES.map(() => "?").join(", ")})
             THEN 1 ELSE 0
           END) AS has_complaint,
           MAX(CASE
-            WHEN reason_code IN (${DISPUTE_ACCEPTANCE_CODES.map(() => "?").join(", ")})
+            WHEN adjustment_flag IN (${DISPUTE_ACCEPTANCE_CODES.map(() => "?").join(", ")})
             THEN 1 ELSE 0
           END) AS is_successful_dispute,
           MAX(CASE
-            WHEN reason_code IN (${FINAL_REJECTION_CODES.map(() => "?").join(", ")})
+            WHEN adjustment_flag IN (${FINAL_REJECTION_CODES.map(() => "?").join(", ")})
             THEN 1 ELSE 0
           END) AS is_rejected_complaint
         FROM adjustment_outward_history
-        WHERE beneficiary_account_number = ?
+        WHERE remitter_account_number = ?
         GROUP BY transaction_id
       )
       SELECT

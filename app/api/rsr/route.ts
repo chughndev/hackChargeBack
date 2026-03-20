@@ -10,12 +10,12 @@ export async function GET() {
           transaction_id,
 
           MAX(CASE 
-              WHEN reason_code IN (${RAISE_CODES.map(() => "?").join(", ")}) 
-              THEN reason_code 
+              WHEN adjustment_flag IN (${RAISE_CODES.map(() => "?").join(", ")}) 
+              THEN adjustment_flag 
           END) AS raise_reason,
 
           MAX(CASE 
-              WHEN reason_code IN (${SUCCESS_CODES.map(() => "?").join(", ")}) 
+              WHEN adjustment_flag IN (${SUCCESS_CODES.map(() => "?").join(", ")}) 
               THEN 1 ELSE 0 
           END) AS is_success,
 

@@ -1,15 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
-import { RowDataPacket } from "mysql2";
 import { db } from "@/app/lib/db";
 import {
   DISPUTE_ACCEPTANCE_CODES,
   FINAL_REJECTION_CODES,
   RAISE_CODES,
   SUCCESS_CODES,
+  SUCCESS_PROBABILITY_THRESHOLD,
   SUCCESS_PROBABILITY_WEIGHTS,
 } from "@/app/lib/chargeback";
 
-type SuccessProbabilityRow = RowDataPacket & {
+type SuccessProbabilityRow = {
   rsr: number | string | null;
   msr: number | string | null;
   bsr: number | string | null;
@@ -95,30 +95,28 @@ export async function GET(request: NextRequest) {
           SELECT
             transaction_id,
             MAX(CASE
-              WHEN reason_code IN (${RAISE_CODES.map(() => "?").join(", ")})
-              THEN reason_code
+              WHEN adjustment_flag IN (${RAISE_CODES.map(() => "?").join(", ")})
+              THEN adjustment_flag
             END) AS raise_reason,
             MAX(CASE
-              WHEN reason_code IN (${SUCCESS_CODES.map(() => "?").join(", ")})
+              WHEN adjustment_flag IN (${SUCCESS_CODES.map(() => "?").join(", ")})
               THEN 1 ELSE 0
             END) AS is_success,
             MAX(CASE
-              WHEN reason_code IN (${RAISE_CODES.map(() => "?").join(", ")})
+              WHEN adjustment_flag IN (${RAISE_CODES.map(() => "?").join(", ")})
               THEN 1 ELSE 0
             END) AS has_complaint,
             MAX(CASE
-              WHEN reason_code IN (${DISPUTE_ACCEPTANCE_CODES.map(() => "?").join(", ")})
+              WHEN adjustment_flag IN (${DISPUTE_ACCEPTANCE_CODES.map(() => "?").join(", ")})
               THEN 1 ELSE 0
             END) AS is_successful_dispute,
             MAX(CASE
-              WHEN reason_code IN (${FINAL_REJECTION_CODES.map(() => "?").join(", ")})
+              WHEN adjustment_flag IN (${FINAL_REJECTION_CODES.map(() => "?").join(", ")})
               THEN 1 ELSE 0
             END) AS is_rejected_complaint,
+            MAX(remitter_account_number) AS remitter_account,
             MAX(beneficiary_account_number) AS beneficiary_account,
-            MAX(beneficiary_bank_code) AS beneficiary_bank,
-            MAX(CASE
-              WHEN beneficiary_account_number = ? THEN transaction_amount
-            END) AS user_transaction_amount
+            MAX(beneficiary_bank_code) AS beneficiary_bank
           FROM adjustment_outward_history
           GROUP BY transaction_id
         )
@@ -144,17 +142,17 @@ export async function GET(request: NextRequest) {
           COALESCE((
             SELECT SUM(has_complaint)
             FROM txn_summary
-            WHERE beneficiary_account = ?
+            WHERE remitter_account = ?
           ), 0) AS total_complaints,
           COALESCE((
             SELECT SUM(CASE WHEN has_complaint = 1 THEN 1 ELSE 0 END)
             FROM txn_summary
-            WHERE beneficiary_account = ?
+            WHERE remitter_account = ?
           ), 0) AS valid_disputes,
           COALESCE((
             SELECT SUM(is_successful_dispute)
             FROM txn_summary
-            WHERE beneficiary_account = ?
+            WHERE remitter_account = ?
           ), 0) AS successful_disputes,
           COALESCE((
             SELECT SUM(CASE
@@ -162,18 +160,18 @@ export async function GET(request: NextRequest) {
               ELSE 0
             END)
             FROM txn_summary
-            WHERE beneficiary_account = ?
-          ), 0) AS rejected_complaints,
-          COALESCE((
-            SELECT AVG(user_transaction_amount)
-            FROM txn_summary
-            WHERE user_transaction_amount IS NOT NULL
-          ), 0) AS avg_user_amount,
-          COALESCE((
-            SELECT COUNT(*)
-            FROM txn_summary
-            WHERE user_transaction_amount IS NOT NULL
-          ), 0) AS transaction_count
+            WHERE remitter_account = ?
+        ), 0) AS rejected_complaints,
+        COALESCE((
+          SELECT AVG(amount)
+          FROM transaction_table
+          WHERE remitter_account_number = ?
+        ), 0) AS avg_user_amount,
+        COALESCE((
+          SELECT COUNT(*)
+          FROM transaction_table
+          WHERE remitter_account_number = ?
+        ), 0) AS transaction_count
       `,
       [
         ...RAISE_CODES,
@@ -181,10 +179,11 @@ export async function GET(request: NextRequest) {
         ...RAISE_CODES,
         ...DISPUTE_ACCEPTANCE_CODES,
         ...FINAL_REJECTION_CODES,
-        customerAccountNumber,
         raiseCode,
         beneficiaryAccountNumber,
         beneficiaryBankCode,
+        customerAccountNumber,
+        customerAccountNumber,
         customerAccountNumber,
         customerAccountNumber,
         customerAccountNumber,
@@ -230,6 +229,7 @@ export async function GET(request: NextRequest) {
         raiseCode,
         currentAmount,
         weights: SUCCESS_PROBABILITY_WEIGHTS,
+        threshold: SUCCESS_PROBABILITY_THRESHOLD,
         metrics: {
           rsr: round(rsr),
           msr: round(msr),

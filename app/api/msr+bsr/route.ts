@@ -10,7 +10,7 @@ export async function GET() {
             transaction_id,
 
             MAX(CASE 
-                WHEN reason_code IN (${SUCCESS_CODES.map(() => "?").join(", ")}) 
+                WHEN adjustment_flag IN (${SUCCESS_CODES.map(() => "?").join(", ")}) 
                 THEN 1 ELSE 0 
             END) AS is_success,
 

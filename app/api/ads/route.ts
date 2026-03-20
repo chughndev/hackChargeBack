@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { RowDataPacket } from "mysql2";
 import { db } from "@/app/lib/db";
 
-type AdsRow = RowDataPacket & {
+type AdsRow = {
   avg_user_amount: number | string | null;
   transaction_count: number | string | null;
 };
@@ -56,10 +55,10 @@ export async function GET(request: NextRequest) {
     const [rows] = await db.query<AdsRow[]>(
       `
         SELECT
-          AVG(transaction_amount) AS avg_user_amount,
+          AVG(amount) AS avg_user_amount,
           COUNT(*) AS transaction_count
-        FROM adjustment_outward_history
-        WHERE beneficiary_account_number = ?
+        FROM transaction_table
+        WHERE remitter_account_number = ?
       `,
       [customerAccountNumber]
     );
