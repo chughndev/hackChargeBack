@@ -21,3 +21,13 @@ export const DISPUTE_ACCEPTANCE_CODES = [
   ...ACCEPT_CODES,
   ...RE_RAISE_ACCEPT_CODES,
 ] as const;
+
+export const SUCCESS_PROBABILITY_WEIGHTS = {
+  x: 0.25,
+  y: 0.2,
+  z: 0.25,
+  v: 0.15,
+  w: 0.15,
+} as const;
+
+export const RETURN_PROBABILITY_THRESHOLD = 0.6;
